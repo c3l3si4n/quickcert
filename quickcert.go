@@ -1,4 +1,4 @@
-package main 
+package main
 
 import (
 	"bufio"
@@ -71,6 +71,8 @@ SELECT
 		page := 0
 		for {
 			offset := 1000 * page
+
+			line = strings.ToLower(line)
 			preparedQuery := fmt.Sprintf(query, line, line, offset)
 
 			rows, err := conn.Query(context.Background(), preparedQuery)
@@ -87,6 +89,7 @@ SELECT
 				break
 			}
 			for _, subdomain := range subdomains {
+				subdomain = strings.ToLower(subdomain)
 				if !strings.Contains(subdomain, line) {
 					continue
 				}
