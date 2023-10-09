@@ -5,6 +5,11 @@ This is a simple tool that will directly connect to crt.sh's PostgreSQL server a
 - Subdomains are automatically ordered by oldest to newest.
 - Uses fast postgresql client library (pgx)
 
+## Installation
+```
+go install github.com/c3l3si4n/quickcert@latest
+```
+
 ## Usage
 ```
 echo att.com | quickcert

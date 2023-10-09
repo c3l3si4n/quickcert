@@ -1,4 +1,4 @@
-module quickcert
+module github.com/c3l3si4n/quickcert
 
 go 1.21
 
