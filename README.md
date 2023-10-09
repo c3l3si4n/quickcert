@@ -7,7 +7,7 @@ This is a simple tool that will directly connect to crt.sh's PostgreSQL server a
 
 ## Installation
 ```
-go install github.com/c3l3si4n/quickcert@latest
+go install github.com/c3l3si4n/quickcert@v0.0.2
 ```
 
 ## Usage
