@@ -1,6 +1,5 @@
 module github.com/c3l3si4n/quickcert
 
-replace quickcert => github.com/c3l3si4n/quickcert latest
 
 go 1.21
 
@@ -12,3 +11,4 @@ require (
 	golang.org/x/crypto v0.9.0 // indirect
 	golang.org/x/text v0.9.0 // indirect
 )
+replace quickcert => github.com/c3l3si4n/quickcert v0.0.0-20231009193613-a60bf0c142b4
