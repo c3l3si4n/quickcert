@@ -1,5 +1,7 @@
 module github.com/c3l3si4n/quickcert
 
+replace quickcert => github.com/c3l3si4n/quickcert latest
+
 go 1.21
 
 require github.com/jackc/pgx/v5 v5.4.3
