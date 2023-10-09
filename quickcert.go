@@ -1,4 +1,4 @@
-package main
+package github.com/c3l3si4n/quickcert 
 
 import (
 	"bufio"
