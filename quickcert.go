@@ -24,7 +24,7 @@ func IterStdin() []string {
 	return out
 }
 
-var Limit = 1000
+var Limit = 20000
 
 func main() {
 	uniqueMap := make(map[string]bool)
@@ -67,7 +67,7 @@ SELECT
 	stdin := IterStdin()
 	for _, line := range stdin {
 		page := 0
-		var routineQueue = make(chan bool, 10)
+		var routineQueue = make(chan bool, 1)
 		stop := false
 		var wait sync.WaitGroup
 		lineCopy := line
@@ -76,63 +76,65 @@ SELECT
 				break
 			}
 			offset := Limit * page
+			retries := 0
+			success := false
+			for !success && retries <= 5 {
+				line := strings.ToLower(lineCopy)
+				preparedQuery := fmt.Sprintf(query, line, line, Limit, offset)
+				wait.Add(1)
+				routineQueue <- true
 
-			line := strings.ToLower(lineCopy)
-			preparedQuery := fmt.Sprintf(query, line, line, Limit, offset)
-			wait.Add(1)
-			routineQueue <- true
+				go func() {
+					conn, err := pgx.Connect(context.Background(), CRTSH_DATABASE_URL)
+					defer conn.Close(context.Background())
 
-			go func() {
-				conn, err := pgx.Connect(context.Background(), CRTSH_DATABASE_URL)
-				defer conn.Close(context.Background())
-
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-					os.Exit(1)
-				}
-				rows, err := conn.Query(context.Background(), preparedQuery)
-				if err != nil {
-					rows, err = conn.Query(context.Background(), preparedQuery)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
-						os.Exit(1)
-
-					}
-				}
-				subdomains, err := pgx.CollectRows(rows, pgx.RowTo[string])
-				if err != nil {
-					subdomains, err = pgx.CollectRows(rows, pgx.RowTo[string])
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
+						fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
 						os.Exit(1)
 					}
-				}
-				if len(subdomains) == 0 {
-					stop = true
+					rows, err := conn.Query(context.Background(), preparedQuery)
+					if err != nil {
+						rows, err = conn.Query(context.Background(), preparedQuery)
+						if err != nil {
+							retries += 1
+						}
+					}
+					subdomains, err := pgx.CollectRows(rows, pgx.RowTo[string])
+					if err != nil {
+						subdomains, err = pgx.CollectRows(rows, pgx.RowTo[string])
+						if err != nil {
+							retries += 1
+						}
+					}
+					if len(subdomains) == 0 {
+						stop = true
+						<-routineQueue
+						wait.Done()
+						return
+					}
+					for _, subdomain := range subdomains {
+						subdomain = strings.ToLower(subdomain)
+						if !strings.Contains(subdomain, line) {
+							continue
+						}
+						if strings.HasPrefix(subdomain, "*.") {
+							subdomain = strings.Replace(subdomain, "*.", "", 1)
+						}
+						uniqueMapMutex.Lock()
+						if _, ok := uniqueMap[subdomain]; !ok {
+							fmt.Println(subdomain)
+							uniqueMap[subdomain] = true
+
+						}
+						uniqueMapMutex.Unlock()
+
+					}
+					success = true
+
 					<-routineQueue
 					wait.Done()
-					return
-				}
-				for _, subdomain := range subdomains {
-					subdomain = strings.ToLower(subdomain)
-					if !strings.Contains(subdomain, line) {
-						continue
-					}
-					if strings.HasPrefix(subdomain, "*.") {
-						subdomain = strings.Replace(subdomain, "*.", "", 1)
-					}
-					uniqueMapMutex.Lock()
-					if _, ok := uniqueMap[subdomain]; !ok {
-						fmt.Println(subdomain)
-						uniqueMap[subdomain] = true
-
-					}
-					uniqueMapMutex.Unlock()
-
-				}
-				<-routineQueue
-				wait.Done()
-			}()
+				}()
+			}
 
 			page += 1
 		}
