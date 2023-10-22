@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ func IterStdin() []string {
 	return out
 }
 
-var Limit = 5000
+var Limit = 15000
 
 func main() {
 	uniqueMap := make(map[string]bool)
@@ -32,42 +33,35 @@ func main() {
 
 	query := `
 WITH ci AS (
-    SELECT min(sub.CERTIFICATE_ID) ID,
-           x509_commonName(sub.CERTIFICATE) COMMON_NAME,
-           min(sub.ISSUER_CA_ID) ISSUER_CA_ID,
-           array_agg(DISTINCT sub.NAME_VALUE) NAME_VALUES,
+    SELECT 
+           x509_commonName(sub.CERTIFICATE) COMMON_NAME
 
-           x509_notBefore(sub.CERTIFICATE) NOT_BEFORE,
-           x509_notAfter(sub.CERTIFICATE) NOT_AFTER,
-           encode(x509_serialNumber(sub.CERTIFICATE), 'hex') SERIAL_NUMBER
-        FROM (SELECT cai.*
+         
+        FROM (SELECT cai.CERTIFICATE CERTIFICATE
                   FROM certificate_and_identities cai
                   WHERE plainto_tsquery('certwatch', '%s') @@ identities(cai.CERTIFICATE)
                       AND cai.NAME_VALUE ILIKE ('%%' || '%s')
                   LIMIT %d OFFSET %d
 ) sub
+
         GROUP BY sub.CERTIFICATE
 )
 SELECT 
 
-        ci.COMMON_NAME
+        ci.COMMON_NAME COMMON_NAME
         
     FROM ci
-            LEFT JOIN LATERAL (
-                SELECT min(ctle.ENTRY_TIMESTAMP) ENTRY_TIMESTAMP
-                    FROM ct_log_entry ctle
-                    WHERE ctle.CERTIFICATE_ID = ci.ID
-            ) le ON TRUE,
-         ca
-    WHERE ci.ISSUER_CA_ID = ca.ID AND ci.COMMON_NAME IS NOT NULL
-    ORDER BY le.ENTRY_TIMESTAMP NULLS LAST;
+            
+            
+         
+    WHERE COMMON_NAME IS NOT NULL
 `
 	// iterate lines in stdin
 	// for each line, prepare a query
 	stdin := IterStdin()
 	for _, line := range stdin {
 		page := 0
-		var routineQueue = make(chan bool, 3)
+		var routineQueue = make(chan bool, 10)
 		stop := false
 		var wait sync.WaitGroup
 		lineCopy := line
@@ -76,17 +70,18 @@ SELECT
 				break
 			}
 			offset := Limit * page
-			retries := 0
-			success := false
-			for !success && retries <= 5 {
-				line := strings.ToLower(lineCopy)
-				preparedQuery := fmt.Sprintf(query, line, line, Limit, offset)
-				wait.Add(1)
-				routineQueue <- true
 
-				go func() {
+			line := strings.ToLower(lineCopy)
+			preparedQuery := fmt.Sprintf(query, line, line, Limit, offset)
+			wait.Add(1)
+			routineQueue <- true
+			pageTmp := page
+			go func(page int) {
+				retries := 0
+				success := false
+				for !success && retries <= 5 {
+
 					conn, err := pgx.Connect(context.Background(), CRTSH_DATABASE_URL)
-					defer conn.Close(context.Background())
 
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
@@ -94,22 +89,26 @@ SELECT
 					}
 					rows, err := conn.Query(context.Background(), preparedQuery)
 					if err != nil {
+						log.Println(err)
+
 						rows, err = conn.Query(context.Background(), preparedQuery)
 						if err != nil {
 							retries += 1
-							<-routineQueue
-							wait.Done()
-							return
+							conn.Close(context.Background())
+
+							continue
 						}
 					}
 					subdomains, err := pgx.CollectRows(rows, pgx.RowTo[string])
 					if err != nil {
+						log.Println(err)
+
 						subdomains, err = pgx.CollectRows(rows, pgx.RowTo[string])
 						if err != nil {
 							retries += 1
-							<-routineQueue
-							wait.Done()
-							return
+							conn.Close(context.Background())
+
+							continue
 						}
 					}
 					if len(subdomains) == 0 {
@@ -117,6 +116,8 @@ SELECT
 						<-routineQueue
 						wait.Done()
 						success = true
+						conn.Close(context.Background())
+
 						return
 					}
 					for _, subdomain := range subdomains {
@@ -136,15 +137,18 @@ SELECT
 						uniqueMapMutex.Unlock()
 
 					}
+					conn.Close(context.Background())
 					success = true
 
-					<-routineQueue
-					wait.Done()
-				}()
-			}
+				}
+				wait.Done()
+				<-routineQueue
 
+			}(pageTmp)
 			page += 1
+
 		}
+
 		wait.Wait()
 
 	}
