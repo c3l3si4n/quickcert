@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/jackc/pgx/v5"
 	"os"
 	"strings"
+	"sync"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // psql -h crt.sh -p 5432 -U guest certwatch
@@ -22,15 +24,11 @@ func IterStdin() []string {
 	return out
 }
 
+var Limit = 1000
+
 func main() {
 	uniqueMap := make(map[string]bool)
-
-	conn, err := pgx.Connect(context.Background(), CRTSH_DATABASE_URL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close(context.Background())
+	uniqueMapMutex := sync.Mutex{}
 
 	query := `
 WITH ci AS (
@@ -46,7 +44,7 @@ WITH ci AS (
                   FROM certificate_and_identities cai
                   WHERE plainto_tsquery('certwatch', '%s') @@ identities(cai.CERTIFICATE)
                       AND cai.NAME_VALUE ILIKE ('%%' || '%s')
-                  LIMIT 1000 OFFSET %d
+                  LIMIT %d OFFSET %d
 ) sub
         GROUP BY sub.CERTIFICATE
 )
@@ -61,7 +59,7 @@ SELECT
                     WHERE ctle.CERTIFICATE_ID = ci.ID
             ) le ON TRUE,
          ca
-    WHERE ci.ISSUER_CA_ID = ca.ID
+    WHERE ci.ISSUER_CA_ID = ca.ID AND ci.COMMON_NAME IS NOT NULL
     ORDER BY le.ENTRY_TIMESTAMP NULLS LAST;
 `
 	// iterate lines in stdin
@@ -69,42 +67,69 @@ SELECT
 	stdin := IterStdin()
 	for _, line := range stdin {
 		page := 0
+		var routineQueue = make(chan bool, 10)
+		stop := false
+		var wait sync.WaitGroup
+		lineCopy := line
 		for {
-			offset := 1000 * page
-
-			line = strings.ToLower(line)
-			preparedQuery := fmt.Sprintf(query, line, line, offset)
-
-			rows, err := conn.Query(context.Background(), preparedQuery)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
-				os.Exit(1)
-			}
-			subdomains, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
-				os.Exit(1)
-			}
-			if len(subdomains) == 0 {
+			if stop {
 				break
 			}
-			for _, subdomain := range subdomains {
-				subdomain = strings.ToLower(subdomain)
-				if !strings.Contains(subdomain, line) {
-					continue
+			offset := Limit * page
+
+			line := strings.ToLower(lineCopy)
+			preparedQuery := fmt.Sprintf(query, line, line, Limit, offset)
+			wait.Add(1)
+			routineQueue <- true
+
+			go func() {
+				conn, err := pgx.Connect(context.Background(), CRTSH_DATABASE_URL)
+				defer conn.Close(context.Background())
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
+					os.Exit(1)
 				}
-				if strings.HasPrefix(subdomain, "*.") {
-					subdomain = strings.Replace(subdomain, "*.", "", 1)
+				rows, err := conn.Query(context.Background(), preparedQuery)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
+					os.Exit(1)
 				}
-				if _, ok := uniqueMap[subdomain]; !ok {
-					fmt.Println(subdomain)
-					uniqueMap[subdomain] = true
+				subdomains, err := pgx.CollectRows(rows, pgx.RowTo[string])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
+					os.Exit(1)
+				}
+				if len(subdomains) == 0 {
+					stop = true
+					<-routineQueue
+					wait.Done()
+					return
+				}
+				for _, subdomain := range subdomains {
+					subdomain = strings.ToLower(subdomain)
+					if !strings.Contains(subdomain, line) {
+						continue
+					}
+					if strings.HasPrefix(subdomain, "*.") {
+						subdomain = strings.Replace(subdomain, "*.", "", 1)
+					}
+					uniqueMapMutex.Lock()
+					if _, ok := uniqueMap[subdomain]; !ok {
+						fmt.Println(subdomain)
+						uniqueMap[subdomain] = true
+
+					}
+					uniqueMapMutex.Unlock()
 
 				}
+				<-routineQueue
+				wait.Done()
+			}()
 
-			}
 			page += 1
 		}
+		wait.Wait()
 
 	}
 }
