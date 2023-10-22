@@ -92,13 +92,20 @@ SELECT
 				}
 				rows, err := conn.Query(context.Background(), preparedQuery)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
-					os.Exit(1)
+					rows, err = conn.Query(context.Background(), preparedQuery)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
+						os.Exit(1)
+
+					}
 				}
 				subdomains, err := pgx.CollectRows(rows, pgx.RowTo[string])
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
-					os.Exit(1)
+					subdomains, err = pgx.CollectRows(rows, pgx.RowTo[string])
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Query failed: %v\n", err)
+						os.Exit(1)
+					}
 				}
 				if len(subdomains) == 0 {
 					stop = true
