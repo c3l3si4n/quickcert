@@ -24,7 +24,7 @@ func IterStdin() []string {
 	return out
 }
 
-var Limit = 20000
+var Limit = 5000
 
 func main() {
 	uniqueMap := make(map[string]bool)
@@ -67,7 +67,7 @@ SELECT
 	stdin := IterStdin()
 	for _, line := range stdin {
 		page := 0
-		var routineQueue = make(chan bool, 1)
+		var routineQueue = make(chan bool, 3)
 		stop := false
 		var wait sync.WaitGroup
 		lineCopy := line
@@ -97,6 +97,9 @@ SELECT
 						rows, err = conn.Query(context.Background(), preparedQuery)
 						if err != nil {
 							retries += 1
+							<-routineQueue
+							wait.Done()
+							return
 						}
 					}
 					subdomains, err := pgx.CollectRows(rows, pgx.RowTo[string])
@@ -104,12 +107,16 @@ SELECT
 						subdomains, err = pgx.CollectRows(rows, pgx.RowTo[string])
 						if err != nil {
 							retries += 1
+							<-routineQueue
+							wait.Done()
+							return
 						}
 					}
 					if len(subdomains) == 0 {
 						stop = true
 						<-routineQueue
 						wait.Done()
+						success = true
 						return
 					}
 					for _, subdomain := range subdomains {
